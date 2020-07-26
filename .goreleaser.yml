@@ -1,0 +1,34 @@
+# This is an example goreleaser.yaml file with some sane defaults.
+# Make sure to check the documentation at http://goreleaser.com
+before:
+  hooks:
+    # You may remove this if you don't use go modules.
+    - go mod download
+    # you may remove this if you don't need go generate
+    # - go generate ./...
+builds:
+  - binary: kubectl-edit_status
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+# https://goreleaser.com/customization/archive/
+archives:
+  # https://goreleaser.com/customization/templates/
+  - name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+checksum:
+  name_template: 'checksums.txt'
+# https://goreleaser.com/customization/snapshots/
+#snapshot:
+  # https://goreleaser.com/customization/templates/
+#  name_template: "{{ .Tag }}"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
