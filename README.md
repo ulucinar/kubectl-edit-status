@@ -1,4 +1,4 @@
-# kubectl-edit-status
+# kubectl edit-status
 A kubectl plugin for editing /status subresource.
 
 This is a [plugin](https://kubernetes.io/docs/tasks/extend-kubectl/kubectl-plugins/) for `kubectl`. 
