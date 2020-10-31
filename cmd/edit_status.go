@@ -68,6 +68,8 @@ import (
 	jsonPatch "github.com/evanphx/json-patch"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
 const (
