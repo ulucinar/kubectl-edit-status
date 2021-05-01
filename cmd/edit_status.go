@@ -45,8 +45,12 @@ package cmd
 
 import (
 	"context"
-	"github.com/spf13/cobra"
 	"io/ioutil"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,15 +60,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
-	"os"
-	"os/exec"
-	"strings"
 
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 	"sigs.k8s.io/yaml"
 
 	"fmt"
+
 	jsonPatch "github.com/evanphx/json-patch"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -110,6 +112,8 @@ type EditStatusOptions struct {
 	originalJSon []byte
 
 	genericclioptions.IOStreams
+
+	filePath string
 }
 
 // NewEditStatusOptions provides an instance of EditStatusOptions with default values
@@ -152,6 +156,7 @@ func NewCmdEditStatus(streams genericclioptions.IOStreams) *cobra.Command {
 		fmt.Sprintf("editor to use. Either editor name in PATH or path to the editor executable. "+
 			"If not specified, first value of %q and then value of %q environment variables are substituted and checked",
 			envKubeEditor, envEditor))
+	cmd.Flags().StringVarP(&o.filePath, "in", "i", "", "Edit status of the resource with specified yaml file")
 
 	// add K8s generic client flags
 	o.configFlags.AddFlags(cmd.Flags())
@@ -246,6 +251,14 @@ func (o *EditStatusOptions) Run(_ *cobra.Command, _ []string) (err error) {
 
 	if err = o.storeResource(tmpEditFile); err != nil {
 		return
+	}
+
+	if o.filePath != "" {
+		if err = o.writeResourceStatusFromInputFile(); err != nil {
+			return
+		}
+
+		return nil
 	}
 
 	if err = o.editResource(tmpEditFile); err != nil {
@@ -360,6 +373,26 @@ func (o *EditStatusOptions) writeResourceStatus(f *os.File) error {
 		DoRaw(context.TODO())
 
 	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (o *EditStatusOptions) writeResourceStatusFromInputFile() error {
+	f, err := os.Open(o.filePath)
+
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if errClose := f.Close(); err != nil {
+			err = errClose
+		}
+	}()
+
+	if err = o.writeResourceStatus(f); err != nil {
 		return err
 	}
 
