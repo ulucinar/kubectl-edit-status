@@ -20,7 +20,17 @@ spec:
           os: darwin
           arch: amd64
       uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/${TAG}/${PROJECT_NAME}_${TAG}_darwin_amd64.tar.gz
-      sha256: ${SHA_DARWIN}
+      sha256: ${SHA_DARWIN_AMD64}
+      files:
+        - from: "*"
+          to: "."
+      bin: ${PLUGIN_BINARY}
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/${TAG}/${PROJECT_NAME}_${TAG}_darwin_arm64.tar.gz
+      sha256: ${SHA_DARWIN_ARM64}
       files:
         - from: "*"
           to: "."
@@ -30,7 +40,7 @@ spec:
           os: linux
           arch: amd64
       uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/${TAG}/${PROJECT_NAME}_${TAG}_linux_amd64.tar.gz
-      sha256: ${SHA_LINUX}
+      sha256: ${SHA_LINUX_AMD64}
       files:
         - from: "*"
           to: "."
@@ -40,7 +50,7 @@ spec:
           os: windows
           arch: amd64
       uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/${TAG}/${PROJECT_NAME}_${TAG}_windows_amd64.tar.gz
-      sha256: ${SHA_WINDOWS}
+      sha256: ${SHA_WINDOWS_AMD64}
       files:
         - from: "*"
           to: "."

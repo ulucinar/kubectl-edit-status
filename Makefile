@@ -50,11 +50,7 @@ bin-windows: kubectl-edit_status-windows
 archives: bin-darwin bin-linux bin-windows
 
 krew:
-	$(eval SHA_DARWIN := $(shell sha256sum dist/$(PROJECT_NAME)_$(TAG)_darwin_amd64.tar.gz | cut -d' ' -f1))
-	$(eval SHA_LINUX := $(shell sha256sum dist/$(PROJECT_NAME)_$(TAG)_linux_amd64.tar.gz | cut -d' ' -f1))
-	$(eval SHA_WINDOWS := $(shell sha256sum dist/$(PROJECT_NAME)_$(TAG)_windows_amd64.tar.gz | cut -d' ' -f1))
-	$(shell cat krew/edit-status.yaml.template | SHA_DARWIN=$(SHA_DARWIN) SHA_LINUX=$(SHA_LINUX) SHA_WINDOWS=$(SHA_WINDOWS) TAG=$(TAG) PLUGIN_BINARY=$(PLUGIN_BINARY) PROJECT_NAME=$(PROJECT_NAME) envsubst > plugins/edit-status.yaml)
-	KREW_COMMIT=$(KREW_COMMIT) TAG=$(TAG) krew/commit_krew_manifest.sh
+	KREW_COMMIT=$(KREW_COMMIT) TAG=$(TAG) PLUGIN_BINARY=$(PLUGIN_BINARY) PROJECT_NAME=$(PROJECT_NAME) krew/prepare_krew_manifest.sh
 
 clean:
 	rm -fR dist

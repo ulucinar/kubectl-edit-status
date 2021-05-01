@@ -8,11 +8,20 @@ With the current plugin mechanism of `kubectl`, it's currently not possible to e
 so this plugin adds a new command (`edit-status`) to `kubectl`.
 
 ## Installation
-You can use [krew](https://krew.sigs.k8s.io/) to install `edit-status`. If you have not installed `krew` yet, which itself is a `kubectl` plugin, 
-you may do so by following `krew`'s [installation instructions](https://krew.sigs.k8s.io/docs/user-guide/setup/install/). 
-`edit-status` is not yet available through `krew`'s [default index](https://github.com/kubernetes-sigs/krew-index), 
-and this repository also acts as a [custom plugin index](https://krew.sigs.k8s.io/docs/developer-guide/custom-indexes/). 
-In order to install `edit-status`:
+You can use [krew](https://krew.sigs.k8s.io/) to install `edit-status`. If you have not installed `krew` yet, which itself is a `kubectl` plugin,
+you may do so by following `krew`'s [installation instructions](https://krew.sigs.k8s.io/docs/user-guide/setup/install/).
+`edit-status` is available through `krew`'s [default index](https://github.com/kubernetes-sigs/krew-index):
+- Update plugin index: <br />
+  `kubectl krew update`
+- Install `edit-status` plugin: <br />
+  `kubectl krew install edit-status`
+- If you have not done yet so, `krew` plugin binary directory (e.g., `${HOME}/.krew/bin`) should be on your `PATH`
+
+
+## Installation by Using This Repo as a Custom Plugin Index
+ 
+This repository also acts as a [custom plugin index](https://krew.sigs.k8s.io/docs/developer-guide/custom-indexes/). 
+In order to install `edit-status` using this repo as a custom plugin index:
 - Please make sure that your `krew` plugin supports custom plugin indexes (version [`0.4.0`](https://github.com/kubernetes-sigs/krew/releases/tag/v0.4.0) or higher).
 - Add this repository as a custom plugin index that indexes just one plugin as of right now: <br />
 `kubectl krew index add edit-status https://github.com/ulucinar/kubectl-edit-status`
