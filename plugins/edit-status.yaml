@@ -22,9 +22,6 @@ spec:
           arch: amd64
       uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/v0.2.0/kubectl-edit-status_v0.2.0_darwin_amd64.tar.gz
       sha256: dbb65ab56beb3ece575748c17961e76018ff2e3eb74a4d221369b308d049f8e3
-      files:
-        - from: "*"
-          to: "."
       bin: kubectl-edit_status
     - selector:
         matchLabels:
@@ -32,9 +29,6 @@ spec:
           arch: arm64
       uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/v0.2.0/kubectl-edit-status_v0.2.0_darwin_arm64.tar.gz
       sha256: 94022f35297521268ced92be7474e300a7b086079dd0c442c790310c20ba6959
-      files:
-        - from: "*"
-          to: "."
       bin: kubectl-edit_status
     - selector:
         matchLabels:
@@ -42,9 +36,6 @@ spec:
           arch: amd64
       uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/v0.2.0/kubectl-edit-status_v0.2.0_linux_amd64.tar.gz
       sha256: f4c463eb61532c865875715862c3e18c17f688f0f0d59365d77c32f37d9b82d5
-      files:
-        - from: "*"
-          to: "."
       bin: kubectl-edit_status
     - selector:
         matchLabels:
@@ -52,7 +43,4 @@ spec:
           arch: amd64
       uri: https://github.com/ulucinar/kubectl-edit-status/releases/download/v0.2.0/kubectl-edit-status_v0.2.0_windows_amd64.tar.gz
       sha256: 006d2367463cadacf3dee6b026530eabf62e1826078a4c883b16a2f0e76cfc66
-      files:
-        - from: "*"
-          to: "."
       bin: kubectl-edit_status.exe
