@@ -45,31 +45,32 @@ package cmd
 
 import (
 	"context"
-	"github.com/spf13/cobra"
+	"fmt"
 	"io/ioutil"
-	"k8s.io/apimachinery/pkg/api/errors"
+	"os"
+	"os/exec"
+	"strings"
+
+	jsonPatch "github.com/evanphx/json-patch"
+	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
+
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/yaml"
+
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/rest"
-	"os"
-	"os/exec"
-	"strings"
-
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/restmapper"
-	"sigs.k8s.io/yaml"
-
-	"fmt"
-	jsonPatch "github.com/evanphx/json-patch"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
-
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 )
 
 const (
@@ -84,9 +85,13 @@ const (
 
 	patternTmpFile = "kubectl-edit-status-"
 
-	editStatusExample = `
-	# edit the status field of the MyResource CR named "test", which uses status subresource 
+	fmtUsage = `	kubectl %s [flags] <partial resource specification> <resource name>
+	or,
+	kubectl %s [flags] <partial resource specification>/<resource name>
+`
+	fmtEditStatusExample = `	# edit the status field of the MyResource CR named "test", which uses status subresource 
 	kubectl %s myresource test
+	kubectl %s myresource/test
 `
 )
 
@@ -116,30 +121,26 @@ type EditStatusOptions struct {
 func NewEditStatusOptions(streams genericclioptions.IOStreams) *EditStatusOptions {
 	return &EditStatusOptions{
 		configFlags: genericclioptions.NewConfigFlags(true),
-
-		IOStreams: streams,
+		IOStreams:   streams,
 	}
 }
 
 // NewCmdEditStatus provides a cobra command wrapping EditStatusOptions
 func NewCmdEditStatus(streams genericclioptions.IOStreams) *cobra.Command {
 	o := NewEditStatusOptions(streams)
-
 	cmd := &cobra.Command{
-		Use:          fmt.Sprintf("kubectl %s [resource] [resource-name] [flags]", argEditStatus),
+		Use:          fmt.Sprintf(fmtUsage, argEditStatus, argEditStatus),
 		Short:        "Edit /status subresource",
-		Example:      fmt.Sprintf(editStatusExample, argEditStatus),
+		Example:      fmt.Sprintf(fmtEditStatusExample, argEditStatus, argEditStatus),
 		SilenceUsage: true,
 		PreRunE: func(cmd *cobra.Command, args []string) error {
-			if err := o.Validate(cmd, args); err != nil {
+			if err := o.Init(cmd, args); err != nil {
 				if usageErr := cmd.Usage(); usageErr != nil {
 					// log usageError
 					_, _ = fmt.Fprintf(o.ErrOut, "Error occured while printing command usage: %s", usageErr.Error())
 				}
-
-				return err
+				return errors.Wrap(err, "cannot initialize")
 			}
-
 			return nil
 		},
 		RunE: o.Run,
@@ -155,47 +156,48 @@ func NewCmdEditStatus(streams genericclioptions.IOStreams) *cobra.Command {
 
 	// add K8s generic client flags
 	o.configFlags.AddFlags(cmd.Flags())
-
 	return cmd
 }
 
-// Validate ensures that all required arguments and flag values are provided and fills the EditStatusOptions receiver arg
-func (o *EditStatusOptions) Validate(cmd *cobra.Command, args []string) error {
-	if len(args) != 2 {
-		return fmt.Errorf("not enough arguments")
+// Init ensures that all required arguments and flag values are provided and fills the EditStatusOptions receiver arg
+func (o *EditStatusOptions) Init(cmd *cobra.Command, args []string) error {
+	switch len(args) {
+	case 2:
+		o.resource = args[0]
+		o.resourceName = args[1]
+	case 1:
+		parts := strings.Split(args[0], "/")
+		if len(parts) != 2 {
+			return errors.New("single command-line argument must be in the following format: <partial resource specification>/<resource name>")
+		}
+		o.resource = parts[0]
+		o.resourceName = parts[1]
+	default:
+		return errors.New("invalid number of command-line arguments. Expecting 1 or 2 arguments.")
 	}
 
-	o.resource = args[0]
-	o.resourceName = args[1]
-
 	var err error
-
 	o.discoveryClient, err = o.configFlags.ToDiscoveryClient()
-
 	if err != nil {
 		return err
 	}
 
 	o.restConfig, err = o.configFlags.ToRESTConfig()
-
 	if err != nil {
 		return err
 	}
 
 	o.dynamicClient, err = dynamic.NewForConfig(o.restConfig)
-
 	if err != nil {
 		return err
 	}
 
 	o.restMapper, err = o.configFlags.ToRESTMapper()
-
 	if err != nil {
 		return err
 	}
 
 	o.namespace, err = cmd.Flags().GetString("namespace")
-
 	if err != nil {
 		return err
 	}
@@ -205,32 +207,25 @@ func (o *EditStatusOptions) Validate(cmd *cobra.Command, args []string) error {
 
 func (o *EditStatusOptions) storeEditorPath() error {
 	editorNames := strings.Split(os.ExpandEnv(o.resourceEditor), delimEditorNames)
-
 	o.resourceEditor = ""
-
 	for _, e := range editorNames {
 		trimmedName := strings.TrimSpace(e)
-
 		if trimmedName != "" {
 			o.resourceEditor = trimmedName
-
 			break
 		}
 	}
-
 	if o.resourceEditor == "" {
-		return fmt.Errorf("resource editor not specified")
+		return errors.New("resource editor not specified")
 	}
-
 	return nil
 }
 
 // Run forks an editor for editing the specified CR's status subresource
-func (o *EditStatusOptions) Run(_ *cobra.Command, _ []string) (err error) {
+func (o *EditStatusOptions) Run(_ *cobra.Command, _ []string) error {
 	tmpEditFile, err := ioutil.TempFile(os.TempDir(), patternTmpFile)
-
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot create temp file")
 	}
 
 	defer func() {
@@ -244,112 +239,92 @@ func (o *EditStatusOptions) Run(_ *cobra.Command, _ []string) (err error) {
 		}
 	}()
 
-	if err = o.storeResource(tmpEditFile); err != nil {
-		return
+	if err := o.storeResource(tmpEditFile); err != nil {
+		return err
 	}
-
-	if err = o.editResource(tmpEditFile); err != nil {
-		return
+	if err := o.editResource(tmpEditFile); err != nil {
+		return err
 	}
-
-	if err = o.writeResourceStatus(tmpEditFile); err != nil {
-		return
-	}
-
-	return nil
+	return o.writeResourceStatus(tmpEditFile)
 }
 
 func (o *EditStatusOptions) storeResource(f *os.File) error {
 	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(o.discoveryClient)
-	resource := schema.GroupVersionResource{
-		Resource: o.resource,
+	resourceParts := strings.Split(o.resource, ".")
+	gvr := schema.GroupVersionResource{
+		Resource: resourceParts[0],
+		Group:    strings.Join(resourceParts[1:], "."),
 	}
-
-	gvrs, err := restMapper.ResourcesFor(resource)
-
+	gvrs, err := restMapper.ResourcesFor(gvr)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "cannot get GVRs for partial specification: %s", gvr.String())
 	}
-
-	for i, gvr := range gvrs {
+	for _, gvr := range gvrs {
 		var obj *unstructured.Unstructured
 		var ri dynamic.ResourceInterface = o.dynamicClient.Resource(gvr)
-
 		if o.namespaced {
 			ri = ri.(dynamic.NamespaceableResourceInterface).Namespace(o.namespace)
 		}
-
 		if obj, err = ri.Get(context.TODO(),
-			o.resourceName, metaV1.GetOptions{}); errors.IsNotFound(err) && i != len(gvrs)-1 {
-			// then resource with given GVR is not found and there are more gvrs to try
+			o.resourceName, metaV1.GetOptions{}); kerrors.IsNotFound(err) {
+			// then resource with the given GVR is not found
 			continue
-		} else if err == nil {
-			if o.originalJSon, err = obj.MarshalJSON(); err != nil {
-				return err
-			} else if buff, err := yaml.JSONToYAML(o.originalJSon); err != nil {
-				return err
-			} else if _, err = f.Write(buff); err != nil {
-				return err
-			} else if err = f.Sync(); err != nil {
-				return err
-			} else if o.gvk, err = o.restMapper.KindFor(gvr); err != nil {
-				return err
-			}
-
-			return nil
-		} else {
-			return err
 		}
+		if err != nil {
+			return errors.Wrapf(err, "cannot get object: GVR: %s, Name: %s", gvr.String(), o.resourceName)
+		}
+		// having read the object, store its YAML manifest into a file for editing
+		if o.originalJSon, err = obj.MarshalJSON(); err != nil {
+			return errors.Wrap(err, "cannot marshal object into JSON")
+		}
+		buff, err := yaml.JSONToYAML(o.originalJSon)
+		if err != nil {
+			return errors.Wrap(err, "cannot convert object JSON to YAML")
+		}
+		if _, err = f.Write(buff); err != nil {
+			return errors.Wrapf(err, "cannot write marshaled YAML to file: %s", f.Name())
+		}
+		if err = f.Sync(); err != nil {
+			return errors.Wrapf(err, "cannot sync file: %s", f.Name())
+		}
+		// finally, store the GVK
+		o.gvk, err = o.restMapper.KindFor(gvr)
+		return errors.Wrapf(err, "cannot get GVK for GVR: %s", gvr.String())
 	}
-
-	return fmt.Errorf("resource %s %q not found", o.resource, o.resourceName)
+	return errors.Errorf("resource %s %q not found", o.resource, o.resourceName)
 }
 
 func (o *EditStatusOptions) editResource(f *os.File) error {
 	cmd := exec.Command(o.resourceEditor, f.Name())
-
 	cmd.Stdin = o.In
 	cmd.Stdout = o.Out
 	cmd.Stderr = o.ErrOut
-
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
+	return errors.Wrapf(cmd.Run(), "cannot edit resource using editor: %q", o.resourceEditor)
 }
 
 func (o *EditStatusOptions) writeResourceStatus(f *os.File) error {
 	restMapping, err := o.restMapper.RESTMapping(o.gvk.GroupKind(), o.gvk.Version)
-
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "cannot get REST mapping for GVK: %s", o.gvk.String())
 	}
 
 	editedYaml, err := ioutil.ReadFile(f.Name())
-
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "cannot read edited object from file: %s", f.Name())
 	}
-
 	editedJSon, err := yaml.YAMLToJSON(editedYaml)
-
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "cannot convert edited object's YAML to JSON from file: %s", f.Name())
 	}
-
 	patch, err := jsonPatch.CreateMergePatch(o.originalJSon, editedJSon)
-
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot prepare merge patch")
 	}
 
-	restClient, err := apiutil.RESTClientForGVK(o.gvk, o.restConfig, serializer.CodecFactory{})
-
+	restClient, err := apiutil.RESTClientForGVK(o.gvk, true, o.restConfig, serializer.CodecFactory{})
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "cannot get REST client for GVK: %s", o.gvk.String())
 	}
-
 	_, err = restClient.Patch(types.MergePatchType).
 		NamespaceIfScoped(o.namespace, restMapping.Scope.Name() == meta.RESTScopeNameNamespace).
 		Resource(restMapping.Resource.Resource).
@@ -358,10 +333,5 @@ func (o *EditStatusOptions) writeResourceStatus(f *os.File) error {
 		VersionedParams(&metaV1.PatchOptions{}, metaV1.ParameterCodec).
 		Body(patch).
 		DoRaw(context.TODO())
-
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return errors.Wrapf(err, "cannot merge patch object: GVK: %s, Name: %s", o.gvk.String(), o.resourceName)
 }
