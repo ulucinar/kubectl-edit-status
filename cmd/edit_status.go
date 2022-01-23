@@ -160,7 +160,7 @@ func NewCmdEditStatus(streams genericclioptions.IOStreams) *cobra.Command {
 }
 
 // Init ensures that all required arguments and flag values are provided and fills the EditStatusOptions receiver arg
-func (o *EditStatusOptions) Init(cmd *cobra.Command, args []string) error {
+func (o *EditStatusOptions) Init(_ *cobra.Command, args []string) error {
 	switch len(args) {
 	case 2:
 		o.resource = args[0]
@@ -295,11 +295,26 @@ func (o *EditStatusOptions) storeResource(f *os.File) error {
 }
 
 func (o *EditStatusOptions) editResource(f *os.File) error {
-	cmd := exec.Command(o.resourceEditor, f.Name())
+	parts := strings.Fields(o.resourceEditor)
+	execName := ""
+	var args []string
+	switch len(parts) {
+	case 0:
+		return errors.Errorf("invalid editor specification: %q", o.resourceEditor)
+
+	default:
+		args = parts[1:]
+		fallthrough
+
+	case 1:
+		execName = parts[0]
+		args = append(args, f.Name())
+	}
+	cmd := exec.Command(execName, args...)
 	cmd.Stdin = o.In
 	cmd.Stdout = o.Out
 	cmd.Stderr = o.ErrOut
-	return errors.Wrapf(cmd.Run(), "cannot edit resource using editor: %q", o.resourceEditor)
+	return errors.Wrapf(cmd.Run(), "cannot edit resource using editor. Command-line: %q", cmd.String())
 }
 
 func (o *EditStatusOptions) writeResourceStatus(f *os.File) error {
