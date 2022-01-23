@@ -54,13 +54,14 @@ import (
 	jsonPatch "github.com/evanphx/json-patch"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"go.uber.org/multierr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/yaml"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -79,11 +80,11 @@ const (
 	envEditor     = "EDITOR"
 	envKubeEditor = "KUBE_EDITOR"
 
-	delimEditorNames = ":"
-
+	delimEditorNames  = ":"
 	defaultEditorName = "vi"
-
-	patternTmpFile = "kubectl-edit-status-"
+	defaultNamespaced = true
+	patternTmpFile    = "kubectl-edit-status-"
+	flagNamespaced    = "namespaced"
 
 	fmtUsage = `	kubectl %s [flags] <partial resource specification> <resource name>
 	or,
@@ -99,6 +100,7 @@ const (
 // the current context on a user's KUBECONFIG
 type EditStatusOptions struct {
 	configFlags *genericclioptions.ConfigFlags
+	cmd         *cobra.Command
 
 	namespaced     bool
 	namespace      string
@@ -128,7 +130,7 @@ func NewEditStatusOptions(streams genericclioptions.IOStreams) *EditStatusOption
 // NewCmdEditStatus provides a cobra command wrapping EditStatusOptions
 func NewCmdEditStatus(streams genericclioptions.IOStreams) *cobra.Command {
 	o := NewEditStatusOptions(streams)
-	cmd := &cobra.Command{
+	o.cmd = &cobra.Command{
 		Use:          fmt.Sprintf(fmtUsage, argEditStatus, argEditStatus),
 		Short:        "Edit /status subresource",
 		Example:      fmt.Sprintf(fmtEditStatusExample, argEditStatus, argEditStatus),
@@ -146,8 +148,8 @@ func NewCmdEditStatus(streams genericclioptions.IOStreams) *cobra.Command {
 		RunE: o.Run,
 	}
 
-	cmd.Flags().BoolVar(&o.namespaced, "namespaced", true, "set to false for cluster-scoped resources")
-	cmd.Flags().StringVarP(&o.resourceEditor, "editor", "e",
+	o.cmd.Flags().BoolVar(&o.namespaced, flagNamespaced, defaultNamespaced, "set to false for cluster-scoped resources")
+	o.cmd.Flags().StringVarP(&o.resourceEditor, "editor", "e",
 		fmt.Sprintf("${%s}%s${%s}%s%s",
 			envKubeEditor, delimEditorNames, envEditor, delimEditorNames, defaultEditorName),
 		fmt.Sprintf("editor to use. Either editor name in PATH or path to the editor executable. "+
@@ -155,8 +157,8 @@ func NewCmdEditStatus(streams genericclioptions.IOStreams) *cobra.Command {
 			envKubeEditor, envEditor))
 
 	// add K8s generic client flags
-	o.configFlags.AddFlags(cmd.Flags())
-	return cmd
+	o.configFlags.AddFlags(o.cmd.Flags())
+	return o.cmd
 }
 
 // Init ensures that all required arguments and flag values are provided and fills the EditStatusOptions receiver arg
@@ -248,25 +250,25 @@ func (o *EditStatusOptions) Run(_ *cobra.Command, _ []string) error {
 	return o.writeResourceStatus(tmpEditFile)
 }
 
-func (o *EditStatusOptions) storeResource(f *os.File) error {
+func (o *EditStatusOptions) storeResourceWithGVR(f *os.File, gvr schema.GroupVersionResource) error {
 	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(o.discoveryClient)
-	resourceParts := strings.Split(o.resource, ".")
-	gvr := schema.GroupVersionResource{
-		Resource: resourceParts[0],
-		Group:    strings.Join(resourceParts[1:], "."),
-	}
 	gvrs, err := restMapper.ResourcesFor(gvr)
 	if err != nil {
-		return errors.Wrapf(err, "cannot get GVRs for partial specification: %s", gvr.String())
+		return errors.Wrap(err, "no GVRs found")
 	}
+	namespaced := defaultNamespaced
 	for _, gvr := range gvrs {
 		var obj *unstructured.Unstructured
 		var ri dynamic.ResourceInterface = o.dynamicClient.Resource(gvr)
-		if o.namespaced {
+		namespaced, err = o.isNamespaced(gvr)
+		if err != nil {
+			return err
+		}
+		if namespaced {
 			ri = ri.(dynamic.NamespaceableResourceInterface).Namespace(o.namespace)
 		}
 		if obj, err = ri.Get(context.TODO(),
-			o.resourceName, metaV1.GetOptions{}); kerrors.IsNotFound(err) {
+			o.resourceName, metav1.GetOptions{}); kerrors.IsNotFound(err) {
 			// then resource with the given GVR is not found
 			continue
 		}
@@ -291,7 +293,97 @@ func (o *EditStatusOptions) storeResource(f *os.File) error {
 		o.gvk, err = o.restMapper.KindFor(gvr)
 		return errors.Wrapf(err, "cannot get GVK for GVR: %s", gvr.String())
 	}
-	return errors.Errorf("resource %s %q not found", o.resource, o.resourceName)
+	scope := "cluster-scoped"
+	if namespaced {
+		scope = fmt.Sprintf("namespaced (in %q)", o.namespace)
+	}
+	return errors.Wrapf(err, "%s resource %s %q with GVR %q not found",
+		scope, o.resource, o.resourceName, gvr.String())
+}
+
+func (o *EditStatusOptions) storeResource(f *os.File) error {
+	resourceParts := strings.Split(o.resource, ".")
+	searchGVRs := []schema.GroupVersionResource{
+		{
+			Resource: resourceParts[0],
+			Group:    strings.Join(resourceParts[1:], "."),
+		},
+	}
+	// extend list of GVRs to be searched by any matching short names
+	shortNameGVRs, err := o.resourcesForShortName(resourceParts[0])
+	if err != nil {
+		return err
+	}
+	// short-name matching resources are considered with lower priority
+	searchGVRs = append(searchGVRs, shortNameGVRs...)
+	var aggregatedErr error
+	for _, gvr := range searchGVRs {
+		err := o.storeResourceWithGVR(f, gvr)
+		// as long as we have no resource match for
+		// the partial resource specification or
+		// no object with the given scope & name
+		// we will continue searching.
+		t := &meta.NoResourceMatchError{}
+		if errors.As(err, &t) || kerrors.IsNotFound(err) {
+			aggregatedErr = multierr.Append(aggregatedErr, err)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	return errors.Wrap(aggregatedErr,
+		"cannot find any GVRs for the partial specification, or no objects have been found")
+}
+
+func (o *EditStatusOptions) resourcesForShortName(shortName string) ([]schema.GroupVersionResource, error) {
+	var result []schema.GroupVersionResource
+	_, arrResourceList, err := o.discoveryClient.ServerGroupsAndResources()
+	if err != nil {
+		return nil, errors.Wrapf(err, "cannot discover all server resources to search for the short name: %s", shortName)
+	}
+	for _, resourceList := range arrResourceList {
+		if resourceList == nil {
+			continue
+		}
+		for _, r := range resourceList.APIResources {
+			for _, sn := range r.ShortNames {
+				if sn == shortName {
+					result = append(result, schema.GroupVersionResource{
+						Group:    r.Group,
+						Version:  r.Version,
+						Resource: r.Name,
+					})
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+// isNamespaced returns true if the resource is namespaced.
+// if "--namespaced" is not explicitly set, then we try to infer
+// the resource's scope.
+func (o *EditStatusOptions) isNamespaced(gvr schema.GroupVersionResource) (bool, error) {
+	if o.cmd.Flags().Changed(flagNamespaced) {
+		return o.namespaced, nil
+	}
+	// try to infer resource scope from CRDs
+	gv := schema.GroupVersion{
+		Group:   gvr.Group,
+		Version: gvr.Version,
+	}.String()
+	resourceList, err := o.discoveryClient.ServerResourcesForGroupVersion(gv)
+	if err != nil {
+		return false, errors.Wrapf(err, "cannot discover server resources for GV: %q", gv)
+	}
+	for _, r := range resourceList.APIResources {
+		if r.Name == gvr.Resource {
+			return r.Namespaced, nil
+		}
+	}
+	return defaultNamespaced, nil
 }
 
 func (o *EditStatusOptions) editResource(f *os.File) error {
@@ -345,7 +437,7 @@ func (o *EditStatusOptions) writeResourceStatus(f *os.File) error {
 		Resource(restMapping.Resource.Resource).
 		Name(o.resourceName).
 		SubResource("status").
-		VersionedParams(&metaV1.PatchOptions{}, metaV1.ParameterCodec).
+		VersionedParams(&metav1.PatchOptions{}, metav1.ParameterCodec).
 		Body(patch).
 		DoRaw(context.TODO())
 	return errors.Wrapf(err, "cannot merge patch object: GVK: %s, Name: %s", o.gvk.String(), o.resourceName)
