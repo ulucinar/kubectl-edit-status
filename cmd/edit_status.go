@@ -179,27 +179,27 @@ func (o *EditStatusOptions) Init(cmd *cobra.Command, args []string) error {
 	var err error
 	o.discoveryClient, err = o.configFlags.ToDiscoveryClient()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot get discovery client")
 	}
 
 	o.restConfig, err = o.configFlags.ToRESTConfig()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot get REST config")
 	}
 
 	o.dynamicClient, err = dynamic.NewForConfig(o.restConfig)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot initialize a dynamic client")
 	}
 
 	o.restMapper, err = o.configFlags.ToRESTMapper()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot get a REST mapper")
 	}
 
-	o.namespace, err = cmd.Flags().GetString("namespace")
+	o.namespace, _, err = o.configFlags.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "cannot get configured namespace")
 	}
 
 	return o.storeEditorPath()
