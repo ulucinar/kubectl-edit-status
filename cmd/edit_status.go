@@ -116,6 +116,9 @@ type EditStatusOptions struct {
 	gvk          schema.GroupVersionKind
 	originalJSon []byte
 
+	patchType types.PatchType
+	patchBody []byte
+
 	genericclioptions.IOStreams
 }
 
@@ -225,32 +228,16 @@ func (o *EditStatusOptions) storeEditorPath() error {
 
 // Run forks an editor for editing the specified CR's status subresource
 func (o *EditStatusOptions) Run(_ *cobra.Command, _ []string) error {
-	tmpEditFile, err := ioutil.TempFile(os.TempDir(), patternTmpFile)
-	if err != nil {
-		return errors.Wrap(err, "cannot create temp file")
-	}
-
-	defer func() {
-		errRemove := os.Remove(tmpEditFile.Name())
-
-		if err == nil {
-			err = errRemove
-		} else if errRemove != nil {
-			_, _ = fmt.Fprintf(o.ErrOut, "Error occured while removing temporary file %q: %s",
-				tmpEditFile.Name(), errRemove.Error())
-		}
-	}()
-
-	if err := o.storeResource(tmpEditFile); err != nil {
+	if err := o.storeResource(); err != nil {
 		return err
 	}
-	if err := o.editResource(tmpEditFile); err != nil {
+	if err := o.editResource(); err != nil {
 		return err
 	}
-	return o.writeResourceStatus(tmpEditFile)
+	return o.patchResourceStatus()
 }
 
-func (o *EditStatusOptions) storeResourceWithGVR(f *os.File, gvr schema.GroupVersionResource) error {
+func (o *EditStatusOptions) storeResourceWithGVR(gvr schema.GroupVersionResource) error {
 	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(o.discoveryClient)
 	gvrs, err := restMapper.ResourcesFor(gvr)
 	if err != nil {
@@ -279,16 +266,6 @@ func (o *EditStatusOptions) storeResourceWithGVR(f *os.File, gvr schema.GroupVer
 		if o.originalJSon, err = obj.MarshalJSON(); err != nil {
 			return errors.Wrap(err, "cannot marshal object into JSON")
 		}
-		buff, err := yaml.JSONToYAML(o.originalJSon)
-		if err != nil {
-			return errors.Wrap(err, "cannot convert object JSON to YAML")
-		}
-		if _, err = f.Write(buff); err != nil {
-			return errors.Wrapf(err, "cannot write marshaled YAML to file: %s", f.Name())
-		}
-		if err = f.Sync(); err != nil {
-			return errors.Wrapf(err, "cannot sync file: %s", f.Name())
-		}
 		// finally, store the GVK
 		o.gvk, err = o.restMapper.KindFor(gvr)
 		return errors.Wrapf(err, "cannot get GVK for GVR: %s", gvr.String())
@@ -301,7 +278,7 @@ func (o *EditStatusOptions) storeResourceWithGVR(f *os.File, gvr schema.GroupVer
 		scope, o.resource, o.resourceName, gvr.String())
 }
 
-func (o *EditStatusOptions) storeResource(f *os.File) error {
+func (o *EditStatusOptions) storeResource() error {
 	resourceParts := strings.Split(o.resource, ".")
 	searchGVRs := []schema.GroupVersionResource{
 		{
@@ -318,7 +295,7 @@ func (o *EditStatusOptions) storeResource(f *os.File) error {
 	searchGVRs = append(searchGVRs, shortNameGVRs...)
 	var aggregatedErr error
 	for _, gvr := range searchGVRs {
-		err := o.storeResourceWithGVR(f, gvr)
+		err := o.storeResourceWithGVR(gvr)
 		// as long as we have no resource match for
 		// the partial resource specification or
 		// no object with the given scope & name
@@ -386,7 +363,37 @@ func (o *EditStatusOptions) isNamespaced(gvr schema.GroupVersionResource) (bool,
 	return defaultNamespaced, nil
 }
 
-func (o *EditStatusOptions) editResource(f *os.File) error {
+func (o *EditStatusOptions) editResource() (err error) {
+	f, err := ioutil.TempFile(os.TempDir(), patternTmpFile)
+	if err != nil {
+		return errors.Wrap(err, "cannot create temp file")
+	}
+
+	defer func() {
+		err = multierr.Append(err, errors.Wrapf(os.Remove(f.Name()),
+			"cannot remove temporary file: %s", f.Name()))
+	}()
+
+	// first store the resource into the temp file
+	buff, err := yaml.JSONToYAML(o.originalJSon)
+	if err != nil {
+		return errors.Wrap(err, "cannot convert object JSON to YAML")
+	}
+	if _, err = f.Write(buff); err != nil {
+		return errors.Wrapf(err, "cannot write marshaled YAML to file: %s", f.Name())
+	}
+	if err = f.Sync(); err != nil {
+		return errors.Wrapf(err, "cannot sync file: %s", f.Name())
+	}
+	// now open an editor to edit it
+	if err := o.execEditorCommand(f.Name()); err != nil {
+		return err
+	}
+	// calculate and store JSON merge patch document from edited resource manifest
+	return o.calculateMergePatch(f)
+}
+
+func (o *EditStatusOptions) execEditorCommand(tmpFilePath string) error {
 	parts := strings.Fields(o.resourceEditor)
 	execName := ""
 	var args []string
@@ -400,7 +407,7 @@ func (o *EditStatusOptions) editResource(f *os.File) error {
 
 	case 1:
 		execName = parts[0]
-		args = append(args, f.Name())
+		args = append(args, tmpFilePath)
 	}
 	cmd := exec.Command(execName, args...)
 	cmd.Stdin = o.In
@@ -409,12 +416,7 @@ func (o *EditStatusOptions) editResource(f *os.File) error {
 	return errors.Wrapf(cmd.Run(), "cannot edit resource using editor. Command-line: %q", cmd.String())
 }
 
-func (o *EditStatusOptions) writeResourceStatus(f *os.File) error {
-	restMapping, err := o.restMapper.RESTMapping(o.gvk.GroupKind(), o.gvk.Version)
-	if err != nil {
-		return errors.Wrapf(err, "cannot get REST mapping for GVK: %s", o.gvk.String())
-	}
-
+func (o *EditStatusOptions) calculateMergePatch(f *os.File) error {
 	editedYaml, err := ioutil.ReadFile(f.Name())
 	if err != nil {
 		return errors.Wrapf(err, "cannot read edited object from file: %s", f.Name())
@@ -423,22 +425,28 @@ func (o *EditStatusOptions) writeResourceStatus(f *os.File) error {
 	if err != nil {
 		return errors.Wrapf(err, "cannot convert edited object's YAML to JSON from file: %s", f.Name())
 	}
-	patch, err := jsonPatch.CreateMergePatch(o.originalJSon, editedJSon)
+	o.patchType = types.MergePatchType
+	o.patchBody, err = jsonPatch.CreateMergePatch(o.originalJSon, editedJSon)
+	return errors.Wrap(err, "cannot prepare merge patch")
+}
+
+func (o *EditStatusOptions) patchResourceStatus() error {
+	restMapping, err := o.restMapper.RESTMapping(o.gvk.GroupKind(), o.gvk.Version)
 	if err != nil {
-		return errors.Wrap(err, "cannot prepare merge patch")
+		return errors.Wrapf(err, "cannot get REST mapping for GVK: %s", o.gvk.String())
 	}
 
 	restClient, err := apiutil.RESTClientForGVK(o.gvk, true, o.restConfig, serializer.CodecFactory{})
 	if err != nil {
 		return errors.Wrapf(err, "cannot get REST client for GVK: %s", o.gvk.String())
 	}
-	_, err = restClient.Patch(types.MergePatchType).
+	_, err = restClient.Patch(o.patchType).
 		NamespaceIfScoped(o.namespace, restMapping.Scope.Name() == meta.RESTScopeNameNamespace).
 		Resource(restMapping.Resource.Resource).
 		Name(o.resourceName).
 		SubResource("status").
 		VersionedParams(&metav1.PatchOptions{}, metav1.ParameterCodec).
-		Body(patch).
+		Body(o.patchBody).
 		DoRaw(context.TODO())
 	return errors.Wrapf(err, "cannot merge patch object: GVK: %s, Name: %s", o.gvk.String(), o.resourceName)
 }
